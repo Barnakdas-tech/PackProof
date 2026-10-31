@@ -5,8 +5,10 @@ the installed distribution metadata, and the packaging entry points all have to 
 for `python -m packproof` to work for someone who just cloned the repo.
 """
 
+import os
 import subprocess
 import sys
+from collections.abc import Callable, Mapping
 from importlib.metadata import entry_points
 
 import pytest
@@ -16,25 +18,30 @@ import packproof
 TIMEOUT_SECONDS = 60
 
 
-def run(*argv: str) -> subprocess.CompletedProcess[str]:
+def run(*argv: str, env: Mapping[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     """Launch a real interpreter. Callers pass only `sys.executable` and literal
     arguments — never data derived from a scanned package — so the bandit warning
-    about untrusted input does not apply here."""
+    about untrusted input does not apply here.
+
+    `env=None` inherits this process's environment; passing a mapping affects only the
+    child, which is how a test can pose as GitHub Actions without touching global state.
+    """
     return subprocess.run(  # noqa: S603
         argv,
         capture_output=True,
         text=True,
         timeout=TIMEOUT_SECONDS,
+        env=env,
     )
 
 
 @pytest.mark.integration
-def test_module_entry_point_prints_help() -> None:
+def test_module_entry_point_prints_help(normalize_ansi: Callable[[str], str]) -> None:
     result = run(sys.executable, "-m", "packproof", "--help")
 
     assert result.returncode == 0, result.stderr
-    assert "Usage: python -m packproof" in result.stdout
-    assert "--version" in result.stdout
+    assert "Usage: python -m packproof" in normalize_ansi(result.stdout)
+    assert "--version" in normalize_ansi(result.stdout)
 
 
 @pytest.mark.integration
@@ -81,3 +88,53 @@ def test_module_entry_point_rejects_an_unimplemented_command() -> None:
 
     assert result.returncode == 2
     assert "No such command 'scan'" in result.stderr
+
+
+# ------------------------- the styling GitHub Actions forces (the run that failed CI)
+
+
+def _github_actions_env() -> dict[str, str]:
+    """This environment plus `GITHUB_ACTIONS`, the variable Typer keys its styling on.
+
+    Typer decides `FORCE_TERMINAL` when `rich_utils` is first imported, so patching the
+    variable mid-test cannot restyle an in-process `CliRunner` call — the value is already
+    frozen. A child interpreter imports the module afresh and renders exactly the way CI
+    does, and because the mapping goes to that one child, global state is untouched.
+    """
+    return {**os.environ, "GITHUB_ACTIONS": "true"}
+
+
+@pytest.mark.integration
+def test_help_survives_the_styling_github_actions_forces(
+    normalize_ansi: Callable[[str], str],
+) -> None:
+    """Enter the failing condition on purpose, and prove which part is doing the work.
+
+    The raw-output assertions are what keep this load-bearing: they state that styling
+    really arrived and that the literal fragment really is absent from it. If the helper
+    ever stopped stripping escapes, or Typer stopped styling, this test reports which.
+    """
+    result = run(sys.executable, "-m", "packproof", "--help", env=_github_actions_env())
+
+    assert result.returncode == 0, result.stderr
+    assert "\x1b[" in result.stdout
+    assert "Usage: python -m packproof" not in result.stdout
+
+    help_text = normalize_ansi(result.stdout)
+    assert "Usage: python -m packproof" in help_text
+    assert "prove what's inside your packages" in help_text
+    assert "--version" in help_text
+    assert "--help" in help_text
+
+
+@pytest.mark.integration
+def test_bare_invocation_survives_the_styling_github_actions_forces(
+    normalize_ansi: Callable[[str], str],
+) -> None:
+    """Same condition, the other help path: usage text plus exit code 2, styled."""
+    result = run(sys.executable, "-m", "packproof", env=_github_actions_env())
+
+    assert result.returncode == 2
+    assert "\x1b[" in result.stdout
+    assert "Usage: python -m packproof" not in result.stdout
+    assert "Usage: python -m packproof" in normalize_ansi(result.stdout)

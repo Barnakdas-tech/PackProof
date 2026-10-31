@@ -1,5 +1,7 @@
 """CLI layer behaviour: help, version, exit codes, and what is deliberately absent."""
 
+from collections.abc import Callable
+
 from typer.testing import CliRunner
 
 import packproof
@@ -8,14 +10,17 @@ from packproof.cli.main import app
 runner = CliRunner()
 
 
-def test_help_describes_the_product_and_lists_the_version_flag() -> None:
+def test_help_describes_the_product_and_lists_the_version_flag(
+    normalize_ansi: Callable[[str], str],
+) -> None:
     result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
-    assert "Usage: packproof" in result.stdout
-    assert "prove what's inside your packages" in result.stdout
-    assert "--version" in result.stdout
-    assert "--help" in result.stdout
+    help_text = normalize_ansi(result.stdout)
+    assert "Usage: packproof" in help_text
+    assert "prove what's inside your packages" in help_text
+    assert "--version" in help_text
+    assert "--help" in help_text
 
 
 def test_short_help_flag_is_equivalent_to_long_help() -> None:
@@ -33,13 +38,15 @@ def test_version_short_flag_matches_long_flag() -> None:
     assert runner.invoke(app, ["-V"]).stdout == runner.invoke(app, ["--version"]).stdout
 
 
-def test_bare_invocation_prints_help_and_signals_usage_error() -> None:
+def test_bare_invocation_prints_help_and_signals_usage_error(
+    normalize_ansi: Callable[[str], str],
+) -> None:
     """`packproof` with no arguments is a usage error: help goes to stdout and the
     process exits 2 rather than pretending a scan ran."""
     result = runner.invoke(app, [])
 
     assert result.exit_code == 2
-    assert "Usage: packproof" in result.stdout
+    assert "Usage: packproof" in normalize_ansi(result.stdout)
 
 
 def test_analysis_commands_are_not_implemented_yet() -> None:
